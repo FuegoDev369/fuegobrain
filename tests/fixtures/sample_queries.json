@@ -1,0 +1,28 @@
+{
+  "examples": [
+    {
+      "id": "crypto_africa",
+      "label": "🌍 Crypto en Afrique de l'Ouest",
+      "query": "Analyse l'impact de l'adoption crypto en Afrique de l'Ouest",
+      "expected_agents": ["researcher", "reasoner", "synthesizer"],
+      "expected_response_language": "fr",
+      "description": "Question d'analyse macro avec contexte géopolitique et économique"
+    },
+    {
+      "id": "rag_vs_finetune",
+      "label": "🤖 RAG vs Fine-tuning",
+      "query": "What are the key differences between RAG and fine-tuning for LLMs?",
+      "expected_agents": ["researcher", "reasoner", "synthesizer"],
+      "expected_response_language": "en",
+      "description": "Question technique comparative — prouve que le pipeline fonctionne en anglais"
+    },
+    {
+      "id": "demographic_europe",
+      "label": "📊 Vieillissement Europe",
+      "query": "Quelles sont les implications économiques du vieillissement démographique en Europe ?",
+      "expected_agents": ["researcher", "reasoner", "synthesizer"],
+      "expected_response_language": "fr",
+      "description": "Question multi-dimensionnelle — économie, politique, social"
+    }
+  ]
+}

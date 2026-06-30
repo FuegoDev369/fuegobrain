@@ -1,0 +1,16 @@
+.env
+__pycache__/
+*.pyc
+*.pyo
+.pytest_cache/
+.venv/
+venv/
+*.egg-info/
+dist/
+build/
+.DS_Store
+*.log
+
+VALIDATION-NOTES.md
+GUIDE-GITHUB-ACTIONS.md
+GUIDE-DEPLOIEMENT-RENDER.md

@@ -1,0 +1,81 @@
+"""
+app/orchestrator/response_builder.py
+Converts the internal PipelineResult dataclass into the OrchestrateResponse
+Pydantic model that FastAPI serialises to JSON.
+
+This module is the sole conversion layer between the pipeline's internal
+dataclasses (context.py) and the HTTP API contracts (models.py).
+It is a pure function — no I/O, no side effects, fully unit-testable.
+
+Key renames that happen here (see INTERFACES-CRITIQUES.md):
+  AgentCallRecord.agent_name    → AgentTraceItem.agent
+  AgentCallRecord.response_text → AgentTraceItem.response
+"""
+
+# local
+from app.orchestrator.context import AgentCallRecord, PipelineResult
+from app.models import AgentTraceItem, OrchestrateResponse, PipelineMetadata
+
+
+def build_response(result: PipelineResult) -> OrchestrateResponse:
+    """
+    Convert a PipelineResult (internal dataclasses) into an OrchestrateResponse
+    (Pydantic model) ready for JSON serialisation by FastAPI.
+
+    Args:
+        result: The completed pipeline result produced by orchestrator.py.
+
+    Returns:
+        OrchestrateResponse — the full HTTP response payload.
+
+    Note:
+        Token totals are summed here rather than pre-computed in the Orchestrator
+        to keep orchestrator.py focused on pipeline coordination, not accounting.
+    """
+    # ── Step 1 : Build pipeline_trace ─────────────────────────────────────────
+    # Map each AgentCallRecord → AgentTraceItem, applying the two field renames.
+    pipeline_trace: list[AgentTraceItem] = [
+        _record_to_trace_item(record)
+        for record in result.agent_records
+    ]
+
+    # ── Step 2 : Aggregate token counts ───────────────────────────────────────
+    total_input_tokens: int = sum(r.input_tokens for r in result.agent_records)
+    total_output_tokens: int = sum(r.output_tokens for r in result.agent_records)
+
+    # ── Step 3 : Build metadata ───────────────────────────────────────────────
+    metadata = PipelineMetadata(
+        total_duration_ms=result.total_duration_ms,
+        model=result.model_used,
+        total_input_tokens=total_input_tokens,
+        total_output_tokens=total_output_tokens,
+        agent_count=len(result.agent_records),
+    )
+
+    # ── Step 4 : Assemble and return the full response ─────────────────────────
+    return OrchestrateResponse(
+        final_answer=result.final_answer,
+        pipeline_trace=pipeline_trace,
+        metadata=metadata,
+        query=result.original_query,
+    )
+
+
+def _record_to_trace_item(record: AgentCallRecord) -> AgentTraceItem:
+    """
+    Map a single AgentCallRecord dataclass to an AgentTraceItem Pydantic model.
+
+    Field renames (dataclass → Pydantic):
+      record.agent_name    → item.agent     (HTTP-friendly name)
+      record.response_text → item.response  (HTTP-friendly name)
+
+    All other fields are identical in name and type.
+    """
+    return AgentTraceItem(
+        agent=record.agent_name,         # renamed: agent_name → agent
+        prompt_sent=record.prompt_sent,
+        response=record.response_text,   # renamed: response_text → response
+        duration_ms=record.duration_ms,
+        input_tokens=record.input_tokens,
+        output_tokens=record.output_tokens,
+    )

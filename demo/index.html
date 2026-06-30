@@ -1,0 +1,99 @@
+<!DOCTYPE html>
+<!--
+  index.html
+  Démo web FuegoBrain — interface vanilla HTML/CSS/JS, zéro framework.
+  Les IDs ci-dessous sont des contrats avec app.js (TICKET-16) — ne pas renommer
+  sans mettre à jour app.js en conséquence.
+-->
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>FuegoBrain — Multi-Agent Orchestration</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600&family=Fira+Code&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+  <!-- Header -->
+  <header>
+    <h1>⚡ FuegoBrain</h1>
+    <p class="tagline">A transparent multi-agent pipeline. Built to be read, not just used.</p>
+  </header>
+
+  <main>
+    <!-- Zone de saisie -->
+    <section class="input-section">
+      <textarea id="query-input" class="query-input" placeholder="Ask a complex question..."></textarea>
+      <button id="submit-btn" class="submit-btn">Run Pipeline →</button>
+    </section>
+
+    <!-- Exemples pré-chargés -->
+    <section class="examples-section">
+      <span>Try an example:</span>
+      <button class="example-btn" data-query="Analyse l'impact de l'adoption crypto en Afrique de l'Ouest">
+        🌍 Crypto en Afrique de l'Ouest
+      </button>
+      <button class="example-btn" data-query="What are the key differences between RAG and fine-tuning for LLMs?">
+        🤖 RAG vs Fine-tuning
+      </button>
+      <button class="example-btn" data-query="Quelles sont les implications économiques du vieillissement démographique en Europe ?">
+        📊 Vieillissement Europe
+      </button>
+    </section>
+
+    <!-- Pipeline visualization -->
+    <section id="pipeline-section" class="hidden">
+      <h2>Pipeline</h2>
+      <div class="pipeline-stages">
+        <div id="stage-researcher" class="pipeline-stage idle">
+          <div class="stage-icon">🔍</div>
+          <div class="stage-name">Researcher</div>
+          <div class="stage-status">Collecting facts...</div>
+          <div class="stage-duration" id="duration-researcher"></div>
+        </div>
+        <div class="pipeline-arrow">→</div>
+        <div id="stage-reasoner" class="pipeline-stage idle">
+          <div class="stage-icon">🧠</div>
+          <div class="stage-name">Reasoner</div>
+          <div class="stage-status">Analyzing...</div>
+          <div class="stage-duration" id="duration-reasoner"></div>
+        </div>
+        <div class="pipeline-arrow">→</div>
+        <div id="stage-synthesizer" class="pipeline-stage idle">
+          <div class="stage-icon">✍️</div>
+          <div class="stage-name">Synthesizer</div>
+          <div class="stage-status">Writing answer...</div>
+          <div class="stage-duration" id="duration-synthesizer"></div>
+        </div>
+      </div>
+      <div id="loading-bar" class="loading-bar hidden"></div>
+    </section>
+
+    <!-- Résultats -->
+    <section id="results-section" class="hidden">
+      <div class="results-grid">
+        <!-- Réponse finale -->
+        <div class="response-panel">
+          <h2>Answer</h2>
+          <div id="final-answer" class="response-box"></div>
+          <div id="metadata-bar"></div>
+        </div>
+        <!-- Trace du pipeline -->
+        <div class="trace-panel">
+          <h2>Pipeline Trace <button id="toggle-raw-btn">View Raw JSON</button></h2>
+          <div id="trace-container"></div>
+          <pre id="raw-json" class="hidden"></pre>
+        </div>
+      </div>
+    </section>
+  </main>
+
+  <footer>
+    <a href="/docs" target="_blank">API Docs (Swagger)</a> ·
+    <a href="https://github.com/fuegodev369/fuegobrain" target="_blank">GitHub</a>
+  </footer>
+
+  <script src="app.js"></script>
+</body>
+</html>
