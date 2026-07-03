@@ -64,8 +64,7 @@ flows through a single mutable `AgentContext` dataclass owned by the
 
 🔗 **https://fuegobrain.onrender.com**
 
-> 🖼️ *Screenshot placeholder — drop a screenshot of the running demo at
-> `docs/screenshot.png` and reference it here once deployed.*
+![screenshot of the running demo](assets/screenshot.png)
 
 ---
 
