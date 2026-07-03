@@ -11,15 +11,13 @@ Pipeline: Researcher → Reasoner → Synthesizer (strictly sequential, never pa
 # stdlib
 import time
 
-# third-party
-import anthropic
-
 # local
 from app.config import get_settings
 from app.models import OrchestrateResponse
 from app.orchestrator.agents import ResearcherAgent, ReasonerAgent, SynthesizerAgent
 from app.orchestrator.context import AgentCallRecord, AgentContext, PipelineResult
 from app.orchestrator.response_builder import build_response
+from app.providers import ProviderAPIError, ProviderRateLimitError
 
 
 class Orchestrator:
@@ -27,8 +25,10 @@ class Orchestrator:
     Coordinates the three-agent pipeline that powers POST /orchestrate.
 
     Instantiated once at application startup (via FastAPI lifespan) and reused
-    across all requests. This means one Anthropic client per agent per worker —
-    no reconnection overhead per request.
+    across all requests. This means one provider adapter per agent per worker —
+    no reconnection overhead per request. Which concrete provider each agent
+    uses (Anthropic/Mistral/Gemini/Grok) is resolved per agent via Settings
+    (DEC-17: Gemini is the default for all three).
 
     The pipeline is strictly sequential:
       1. ResearcherAgent  — collects facts and context
@@ -41,9 +41,11 @@ class Orchestrator:
     """
 
     def __init__(self) -> None:
-        # Instantiate agents once — each creates its own Anthropic client internally.
-        # Reusing instances across requests avoids re-initialising the HTTP client
-        # on every call, which matters on free-tier infrastructure.
+        # Instantiate agents once — each resolves its own provider adapter
+        # internally (Anthropic/Mistral/Gemini/Grok, per-agent config).
+        # Reusing instances across requests avoids re-initialising the
+        # underlying HTTP client on every call, which matters on
+        # free-tier infrastructure.
         self.researcher = ResearcherAgent()
         self.reasoner = ReasonerAgent()
         self.synthesizer = SynthesizerAgent()
@@ -54,9 +56,10 @@ class Orchestrator:
         Execute the full pipeline on a raw query string.
 
         This is the single entry point called by main.py.
-        All Anthropic errors (RateLimitError, APIError) are intentionally
-        allowed to propagate — main.py catches them and maps them to HTTP
-        status codes (429, 503).
+        Provider errors (ProviderRateLimitError, ProviderAPIError — generic,
+        regardless of which LLM provider each agent is configured to use)
+        are intentionally allowed to propagate; main.py catches them and
+        maps them to HTTP status codes (429, 503).
 
         Args:
             query: The user's question, already validated by Pydantic
@@ -111,7 +114,11 @@ class Orchestrator:
             final_answer=synthesizer_record.response_text,
             agent_records=records,
             total_duration_ms=total_duration_ms,
-            model_used=self.settings.anthropic_model,
+            # model_used=... ← REMOVED (TICKET-34/35). The field no longer
+            #                   exists on PipelineResult; PipelineMetadata.
+            #                   models_used is computed directly from
+            #                   agent_records in response_builder.py — no
+            #                   need to pre-aggregate a single value here.
             original_query=query,
         )
 
@@ -127,8 +134,16 @@ class Orchestrator:
         """
         Execute a single agent and return its call record.
 
-        Anthropic errors are re-raised as-is so that main.py can map them
-        to the correct HTTP status codes (429 → RateLimitError, 503 → APIError).
+        Provider errors are re-raised as-is so main.py can map them to the
+        correct HTTP status codes (429 for rate limits, 503 for other
+        provider failures). This catches the GENERIC ProviderRateLimitError /
+        ProviderAPIError (TICKET-24), not Anthropic-specific exceptions.
+        Fixed in TICKET-35 — since TICKET-29, base_agent.py raises these
+        generic types regardless of which provider (Anthropic/Mistral/
+        Gemini/Grok) is actually configured; the previous
+        `except anthropic.*` clauses here were dead code that could never
+        match — the generic provider exception types are not subclasses
+        of any Anthropic SDK exception.
         AssertionError (precondition violation) surfaces a pipeline bug —
         it should never occur in production if execution order is respected.
 
@@ -140,13 +155,13 @@ class Orchestrator:
             AgentCallRecord: Timing, token counts, prompt sent, and raw response.
 
         Raises:
-            anthropic.RateLimitError: Retries exhausted in BaseAgent.
-            anthropic.APIError:       Any other Anthropic API failure.
-            AssertionError:           Precondition violated (pipeline bug).
+            ProviderRateLimitError: Retries already exhausted in BaseAgent.
+            ProviderAPIError:       Any other provider API failure.
+            AssertionError:         Precondition violated (pipeline bug).
         """
         try:
             return await agent.run(context)
-        except anthropic.RateLimitError:
+        except ProviderRateLimitError:
             raise  # Retries already exhausted in BaseAgent — propagate to main.py
-        except anthropic.APIError:
+        except ProviderAPIError:
             raise  # Propagate to main.py → HTTP 503

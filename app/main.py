@@ -12,7 +12,6 @@ import os
 from contextlib import asynccontextmanager
 
 # third-party
-import anthropic
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
@@ -27,6 +26,7 @@ from app.models import (
     OrchestrateResponse,
 )
 from app.orchestrator import Orchestrator
+from app.providers import ProviderAPIError, ProviderRateLimitError
 
 # ── Demo directory location ─────────────────────────────────────────────────
 # Resolved relative to this file: app/main.py -> ../demo
@@ -35,7 +35,7 @@ DEMO_DIR = os.path.join(os.path.dirname(__file__), "..", "demo")
 
 # ── Lifespan — singleton Orchestrator ───────────────────────────────────────
 # FastAPI's modern lifespan pattern (replaces the deprecated @app.on_event).
-# The Orchestrator (and the 3 agents + Anthropic clients it owns) is created
+# The Orchestrator (and the 3 agents + provider adapters they own) is created
 # exactly once per worker process and reused across every request.
 @asynccontextmanager
 async def lifespan(app: FastAPI):
@@ -80,8 +80,27 @@ app.add_middleware(
 # ── GET /health ──────────────────────────────────────────────────────────
 @app.get("/health", response_model=HealthResponse, tags=["System"])
 async def health_check() -> HealthResponse:
-    """Liveness probe used by Render, UptimeRobot, and the Docker healthcheck."""
-    return HealthResponse(model=get_settings().anthropic_model)
+    """
+    Liveness probe used by Render, UptimeRobot, and the Docker healthcheck.
+
+    ALWAYS returns 200 if the process is running — this is a liveness
+    probe, not a readiness probe (DEC-22). It reports each agent's
+    CONFIGURED provider/model from Settings (no LLM calls, zero cost), and
+    surfaces a misconfiguration (missing API key for a configured provider)
+    inline in the response body rather than raising — a monitoring tool
+    like UptimeRobot should see the process as "up" even if one provider
+    is misconfigured; that is a config problem to fix, not a reason to
+    report the whole service as down.
+    """
+    settings = get_settings()
+    agents: dict[str, str] = {}
+    for agent_name in ("researcher", "reasoner", "synthesizer"):
+        try:
+            provider, model, _ = settings.get_agent_config(agent_name)
+            agents[agent_name] = f"{provider}/{model}"
+        except ValueError as e:
+            agents[agent_name] = f"MISCONFIGURED — {e}"
+    return HealthResponse(agents=agents)
 
 
 # ── POST /orchestrate ────────────────────────────────────────────────────
@@ -93,29 +112,30 @@ async def health_check() -> HealthResponse:
     responses={
         200: {"description": "Pipeline completed successfully"},
         422: {"description": "Validation error — query too short/long"},
-        429: {"model": ErrorResponse, "description": "Anthropic API rate limit exceeded"},
-        503: {"model": ErrorResponse, "description": "Anthropic API unavailable"},
+        429: {"model": ErrorResponse, "description": "Rate limit exceeded on the configured LLM provider"},
+        503: {"model": ErrorResponse, "description": "The configured LLM provider is unavailable"},
     },
 )
 async def orchestrate(request: OrchestrateRequest) -> OrchestrateResponse:
     """
     Run the full Researcher → Reasoner → Synthesizer pipeline on `request.query`.
-    Anthropic SDK errors propagate unwrapped from the Orchestrator and are
-    mapped to HTTP status codes here — this is the single place that decides
-    what each error type means for the client.
+    Provider errors (from whichever LLM provider each agent is configured to
+    use — Anthropic, Mistral, Gemini, or Grok) propagate unwrapped from the
+    Orchestrator and are mapped to HTTP status codes here — this is the
+    single place that decides what each error type means for the client.
     """
     orchestrator: Orchestrator = app.state.orchestrator
     try:
         return await orchestrator.run(request.query)
-    except anthropic.RateLimitError:
+    except ProviderRateLimitError:
         raise HTTPException(
             status_code=429,
-            detail="Anthropic API rate limit reached. Please wait a moment and retry.",
+            detail="Rate limit reached on the configured LLM provider. Please wait a moment and retry.",
         )
-    except anthropic.APIError as e:
+    except ProviderAPIError as e:
         raise HTTPException(
             status_code=503,
-            detail=f"Anthropic API error: {str(e)}",
+            detail=f"LLM provider error: {str(e)}",
         )
     except Exception as e:
         raise HTTPException(

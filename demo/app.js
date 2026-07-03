@@ -192,9 +192,16 @@ function displayResults(data) {
   document.getElementById('final-answer').innerHTML = formatMarkdown(data.final_answer);
 
   // Barre de métadonnées agrégées
+  // AVANT (TICKET-16 original) : data.metadata.model — champ retiré par TICKET-33
+  // (PipelineMetadata n'a plus de valeur unique de modèle, structurellement
+  // incapable de représenter 3 modèles potentiellement différents par agent).
+  // APRÈS (TICKET-37) : data.metadata.models_used est une liste dédupliquée,
+  // ordre d'exécution préservé — un seul élément dans la config par défaut
+  // (les 3 agents partagent gemini/gemini-2.5-flash), potentiellement
+  // plusieurs pour une config mixte. Jointe ici pour un affichage compact.
   const totalTokens = data.metadata.total_input_tokens + data.metadata.total_output_tokens;
   document.getElementById('metadata-bar').textContent =
-    `Pipeline: ${data.metadata.total_duration_ms}ms · ${totalTokens} tokens · ${data.metadata.model}`;
+    `Pipeline: ${data.metadata.total_duration_ms}ms · ${totalTokens} tokens · ${data.metadata.models_used.join(', ')}`;
 
   // Durées réelles par agent, injectées dans les cartes de stage
   data.pipeline_trace.forEach((item) => {

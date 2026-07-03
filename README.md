@@ -3,7 +3,8 @@
 
 ![Python](https://img.shields.io/badge/Python-3.11-3776AB?logo=python&logoColor=white)
 ![FastAPI](https://img.shields.io/badge/FastAPI-0.115%2B-009688?logo=fastapi&logoColor=white)
-![Model](https://img.shields.io/badge/model-claude--sonnet--4--6-ff4500)
+![Providers](https://img.shields.io/badge/providers-Anthropic%20%7C%20Mistral%20%7C%20Gemini%20%7C%20Grok-ff4500)
+![Default](https://img.shields.io/badge/default-Gemini%20(free)-22c55e)
 ![Live Demo](https://img.shields.io/badge/demo-live-22c55e)
 
 > 🎬 *Demo GIF placeholder — record a 5-6s clip of the pipeline animation
@@ -199,7 +200,7 @@ than hiding it, is a deliberate trust-building choice.
 git clone https://github.com/fuegodev369/fuegobrain.git
 cd fuegobrain
 pip install -r requirements.txt
-cp .env.example .env   # then fill in ANTHROPIC_API_KEY
+cp .env.example .env   # then fill in GEMINI_API_KEY (default provider, free tier)
 uvicorn app.main:app --reload
 ```
 
@@ -218,7 +219,7 @@ then optionally confirm the container builds too:
 
 ```bash
 docker build -t fuegobrain:local .
-docker run --rm -e ANTHROPIC_API_KEY=$ANTHROPIC_API_KEY -p 8000:8000 fuegobrain:local
+docker run --rm -e GEMINI_API_KEY=$GEMINI_API_KEY -p 8000:8000 fuegobrain:local
 # or, for the dev-friendly hot-reload version:
 docker-compose up
 ```
@@ -257,6 +258,49 @@ configuration for the demo frontend.
 
 ---
 
+## Multi-Provider Support
+
+FuegoBrain isn't locked to a single LLM vendor. Each agent — Researcher,
+Reasoner, Synthesizer — can independently use Anthropic, Mistral, Gemini,
+or Grok, configured entirely through environment variables. No code changes
+required to switch.
+
+**Default configuration runs entirely on Gemini's free tier** (Flash model,
+no credit card required) — the project works out of the box at zero cost.
+
+| Provider | Free tier? | Notes |
+|---|---|---|
+| **Gemini** (default) | ✅ Yes — confirmed, no CC required | Flash/Flash-Lite only; Pro moved to paid in April 2026 |
+| **Mistral** | ✅ Yes — "Experiment" tier, no CC required | ~1B tokens/month, rate-limited (~2 RPM) |
+| **Anthropic** | ❌ No | Paid from the first request |
+| **Grok (xAI)** | ❌ No — verified against official docs | Some third-party articles claim free credits; not confirmed by x.ai's own pricing page as of June 2026 |
+
+### Switching providers
+
+Set per-agent provider and model in `.env`:
+
+```bash
+RESEARCHER_PROVIDER=mistral
+RESEARCHER_MODEL=mistral-small-latest
+
+SYNTHESIZER_PROVIDER=anthropic
+SYNTHESIZER_MODEL=claude-sonnet-4-6
+```
+
+Only the API key for the provider(s) actually in use needs to be set — an
+unused provider's key can stay empty in `.env`.
+
+### How it works
+
+A small adapter layer (`app/providers/`) normalizes each provider's SDK
+response into a common `ProviderResponse` shape (`text`, `input_tokens`,
+`output_tokens`). `BaseAgent` calls whichever provider is configured for
+that agent without knowing which one it is — same retry logic, same
+pipeline, regardless of vendor. See `app/providers/base_provider.py` for
+the full interface.
+
+---
+
 ## Stack & Choices
 
 | Technology | Role | Why this choice |
@@ -265,7 +309,7 @@ configuration for the demo frontend.
 | FastAPI 0.115+ | HTTP layer | Async-native, automatic OpenAPI docs, Pydantic integration out of the box |
 | Pydantic v2 | HTTP boundary validation | Strict input validation (`query` length 10–2000) and typed, self-documenting response schemas |
 | stdlib `dataclasses` | Internal pipeline state | Pydantic is reserved for the HTTP boundary only — internal state stays framework-free and trivially readable |
-| Anthropic SDK (claude-sonnet-4-6) | LLM calls | Synchronous SDK wrapped in `asyncio.to_thread()` to avoid blocking FastAPI's event loop |
+| Multi-provider adapters (`app/providers/`) | LLM calls | Anthropic, Mistral, Gemini, and Grok SDKs behind a common `BaseLLMProvider` interface; each provider's synchronous SDK call is wrapped in `asyncio.to_thread()` to avoid blocking FastAPI's event loop — see "Multi-Provider Support" above |
 | `pydantic-settings` | Configuration | Validates env vars at boot (fail fast on missing key) instead of crashing mid-request |
 | HTML + CSS + JS vanilla | Demo frontend | Zero external dependencies — runs from a single static folder, no build step |
 | Docker | Containerization | Reproducible builds; `python:3.11-slim` base for a small image |
@@ -287,13 +331,20 @@ fuegobrain/
 ├── app/
 │   ├── main.py                      # FastAPI app, routes, CORS, lifespan
 │   ├── models.py                    # Pydantic v2 models — HTTP boundary only
-│   ├── config.py                    # Settings via pydantic-settings + lru_cache
+│   ├── config.py                    # Settings via pydantic-settings + lru_cache (per-agent provider config)
+│   ├── providers/
+│   │   ├── base_provider.py         # BaseLLMProvider interface + ProviderResponse
+│   │   ├── anthropic_provider.py    # Anthropic adapter
+│   │   ├── mistral_provider.py      # Mistral adapter
+│   │   ├── gemini_provider.py       # Gemini adapter (default)
+│   │   ├── grok_provider.py         # Grok/xAI adapter (OpenAI-compatible SDK)
+│   │   └── __init__.py              # PROVIDER_REGISTRY + get_provider() factory
 │   └── orchestrator/
 │       ├── orchestrator.py          # Sequential pipeline coordinator (read this first)
 │       ├── context.py               # AgentContext / AgentCallRecord / PipelineResult (dataclasses)
 │       ├── response_builder.py      # dataclass → Pydantic conversion + token aggregation
 │       └── agents/
-│           ├── base_agent.py        # Shared retry/timing/Anthropic-call logic
+│           ├── base_agent.py        # Shared retry/timing/provider-call logic (provider-agnostic)
 │           ├── researcher.py        # Agent 1 — fact collection
 │           ├── reasoner.py          # Agent 2 — analysis
 │           └── synthesizer.py       # Agent 3 — final answer
@@ -304,6 +355,7 @@ fuegobrain/
 ├── tests/
 │   ├── test_agents.py               # Per-agent unit tests (mocked)
 │   ├── test_orchestrator.py         # Pipeline order + response shape tests (mocked)
+│   ├── test_providers.py            # Provider adapter unit tests (mocked)
 │   └── fixtures/sample_queries.json # Example queries used by demo + tests
 ├── README.md
 ├── .env.example

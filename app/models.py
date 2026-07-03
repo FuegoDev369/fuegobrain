@@ -47,15 +47,28 @@ class AgentTraceItem(BaseModel):
     Note on naming:
       - `agent`    ← AgentCallRecord.agent_name    (renamed at HTTP boundary)
       - `response` ← AgentCallRecord.response_text  (renamed at HTTP boundary)
+
+    `provider` and `model` are NEW (TICKET-33) — added so pipeline_trace
+    remains a complete, self-sufficient record of exactly which LLM handled
+    each stage, consistent with the project's "transparent pipeline, built
+    to be read" positioning even when agents use different providers.
     """
 
     agent: str = Field(
         ...,
         description="Agent identifier: 'researcher' | 'reasoner' | 'synthesizer'",
     )
+    provider: str = Field(
+        ...,
+        description="LLM provider that handled this agent's call (e.g. 'gemini')",
+    )
+    model: str = Field(
+        ...,
+        description="Exact model identifier used (e.g. 'gemini-2.5-flash')",
+    )
     prompt_sent: str = Field(
         ...,
-        description="The user-role message sent to the Anthropic API (system prompt excluded)",
+        description="The user-role message sent to the provider (system prompt excluded)",
     )
     response: str = Field(
         ...,
@@ -63,7 +76,7 @@ class AgentTraceItem(BaseModel):
     )
     duration_ms: int = Field(
         ...,
-        description="Wall-clock duration of the Anthropic API call in milliseconds",
+        description="Wall-clock duration of the provider call in milliseconds",
     )
     input_tokens: int = Field(
         ...,
@@ -85,9 +98,15 @@ class PipelineMetadata(BaseModel):
         ...,
         description="End-to-end wall-clock duration of the pipeline in milliseconds",
     )
-    model: str = Field(
+    models_used: list[str] = Field(
         ...,
-        description="Anthropic model used for all agents (e.g. 'claude-sonnet-4-6')",
+        description=(
+            "Distinct 'provider/model' combinations used across the pipeline, "
+            "in execution order, de-duplicated. E.g. ['gemini/gemini-2.5-flash'] "
+            "if all three agents share the default config, or multiple entries "
+            "for a mixed per-agent configuration. See pipeline_trace for the "
+            "exact provider/model used by each individual agent."
+        ),
     )
     total_input_tokens: int = Field(
         ...,
@@ -121,7 +140,7 @@ class OrchestrateResponse(BaseModel):
     )
     metadata: PipelineMetadata = Field(
         ...,
-        description="Aggregated pipeline metrics (duration, tokens, model)",
+        description="Aggregated pipeline metrics (duration, tokens, models_used)",
     )
     query: str = Field(
         ...,
@@ -132,10 +151,28 @@ class OrchestrateResponse(BaseModel):
 # ── Utility models ────────────────────────────────────────────────────────────
 
 class HealthResponse(BaseModel):
-    """Response model for GET /health — used by UptimeRobot and Docker healthcheck."""
+    """
+    Response model for GET /health — used by UptimeRobot, Render, and the
+    Docker healthcheck.
 
-    status: str = Field(default="ok", description="Always 'ok' if the service is up")
-    model: str = Field(..., description="Anthropic model currently configured")
+    This is a LIVENESS probe, not a readiness probe (see DEC-22): it always
+    returns HTTP 200 if the process is running, and reports each agent's
+    CONFIGURED provider/model from Settings — no LLM calls are made, zero
+    cost. A misconfigured agent (e.g. missing API key for its configured
+    provider) is surfaced INLINE in the `agents` dict rather than raising,
+    so a partial misconfiguration never takes the whole liveness check down.
+    """
+
+    status: str = Field(default="ok", description="Always 'ok' if the process is up")
+    agents: dict[str, str] = Field(
+        ...,
+        description=(
+            "Configured 'provider/model' string per agent — keys: "
+            "'researcher', 'reasoner', 'synthesizer'. A value starting with "
+            "'MISCONFIGURED — ' indicates the configured provider is missing "
+            "its API key; the process itself is still considered healthy."
+        ),
+    )
     version: str = Field(default="1.0.0", description="API version")
 
 

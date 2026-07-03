@@ -2,18 +2,26 @@
 tests/test_agents.py
 Unit tests for the three FuegoBrain agents (Researcher, Reasoner, Synthesizer).
 
-These tests are fully mocked — no real Anthropic API calls are made and no
-real API key is required. They only exercise:
+These tests are fully mocked — no real LLM API calls are made and no real
+API key is required. They only exercise:
   - build_user_message() formatting and preconditions (AssertionError on
     missing context fields)
   - _extract_confidence() parsing logic (synthesizer.py)
   - presence/non-emptiness of the three module-level system prompts
+  - that BaseAgent correctly stores the resolved provider name on the
+    instance (TICKET-34 regression check)
 
-A dummy ANTHROPIC_API_KEY is injected into the environment before any agent
-is instantiated, since BaseAgent.__init__() reads it via get_settings() and
-Settings.anthropic_api_key has no default (DEC-01). Constructing an agent
-does not trigger a network call — only client.messages.create() (never
-invoked here) would.
+A dummy GEMINI_API_KEY is injected into the environment before any agent is
+instantiated, since Gemini is the default provider for all three agents
+(DEC-17) and BaseAgent.__init__() resolves (provider, model, api_key) via
+Settings.get_agent_config(), which raises ValueError if the configured
+provider's key is missing (DEC-18). Constructing an agent does not trigger
+a network call — only provider.call() (never invoked here) would.
+
+TICKET-36 note: this file previously injected ANTHROPIC_API_KEY, a stale
+assumption from before DEC-17/18 (when anthropic_api_key was the sole
+mandatory key). Gemini is now the default provider for all three agents,
+so GEMINI_API_KEY is what get_agent_config() actually needs here.
 """
 
 # stdlib
@@ -23,8 +31,10 @@ import os
 import pytest
 
 # Ensure a dummy API key is present before any module under test calls
-# get_settings() — Settings.anthropic_api_key is mandatory (no default).
-os.environ.setdefault("ANTHROPIC_API_KEY", "test-key-not-real")
+# get_settings() — Gemini is the default provider (DEC-17) for all three
+# agents, so GEMINI_API_KEY (not ANTHROPIC_API_KEY) is what
+# get_agent_config() actually needs by default.
+os.environ.setdefault("GEMINI_API_KEY", "test-key-not-real")
 
 # local
 from app.orchestrator.agents.reasoner import REASONER_SYSTEM_PROMPT, ReasonerAgent
@@ -103,3 +113,21 @@ def test_system_prompts_not_empty():
     assert len(RESEARCHER_SYSTEM_PROMPT) > 100
     assert len(REASONER_SYSTEM_PROMPT) > 100
     assert len(SYNTHESIZER_SYSTEM_PROMPT) > 100
+
+
+# ── Multi-provider regression (TICKET-34/36) ─────────────────────────────────
+
+def test_agent_stores_provider_name():
+    """
+    Regression test for TICKET-34 — BaseAgent must store self.provider_name,
+    not just resolve it locally and discard it (the original gap that
+    triggered the TICKET-33..37 correctif — see diagnostic point 3 in
+    PLAN-IMPLEMENTATION.md).
+
+    Without this test, a future edit to BaseAgent.__init__() could silently
+    reintroduce the same oversight (resolving provider_name locally without
+    storing it on the instance) and nothing would catch it.
+    """
+    agent = ResearcherAgent()
+    assert agent.provider_name == "gemini"  # default provider, DEC-17
+    assert agent.model == "gemini-2.5-flash"  # default model

@@ -3,11 +3,16 @@ app/config.py
 Centralized configuration for FuegoBrain.
 Reads all environment variables via pydantic-settings BaseSettings.
 Exposes a cached singleton via get_settings().
+
+Multi-provider extension (TICKET-28): each agent (researcher/reasoner/
+synthesizer) resolves its own provider + model + API key at runtime via
+get_agent_config(). All 4 provider API keys are optional — only the key
+for the provider actually configured on an agent needs to be set (DEC-18).
 """
 
 # stdlib
 from functools import lru_cache
-from typing import Union
+from typing import Optional, Union
 
 # third-party
 from pydantic import Field, field_validator
@@ -18,15 +23,57 @@ class Settings(BaseSettings):
     """
     Application settings — loaded once from .env at startup.
     All fields are typed and validated by Pydantic v2.
-    A missing ANTHROPIC_API_KEY raises a clear error at boot, not at runtime.
+
+    Note on API keys (DEC-18): none of the 4 provider API keys are mandatory
+    at this layer anymore. With 4 possible providers, requiring all 4 keys
+    at boot would break the "free out-of-the-box" goal (DEC-17 — Gemini is
+    the default). Validation moves from static (Settings() instantiation)
+    to dynamic (per-agent, via get_agent_config(), raised when the agent
+    that needs a missing key is actually instantiated — see
+    app/orchestrator/agents/base_agent.py, TICKET-29).
     """
 
-    # ── Anthropic ─────────────────────────────────────────────────────────
-    # No default — mandatory. Pydantic raises ValidationError at startup if absent.
-    anthropic_api_key: str = Field(..., description="Anthropic API key (required)")
-    anthropic_model: str = Field(
-        default="claude-sonnet-4-6",
-        description="Anthropic model identifier — do not change in v1",
+    # ── API keys per provider ────────────────────────────────────────────
+    # All optional — only the key for the provider(s) configured below
+    # (researcher_provider / reasoner_provider / synthesizer_provider) must
+    # actually be set for the app to run.
+    anthropic_api_key: Optional[str] = Field(
+        default=None, description="Anthropic API key (required only if an agent uses 'anthropic')"
+    )
+    mistral_api_key: Optional[str] = Field(
+        default=None, description="Mistral API key (required only if an agent uses 'mistral')"
+    )
+    gemini_api_key: Optional[str] = Field(
+        default=None, description="Gemini API key (required only if an agent uses 'gemini')"
+    )
+    grok_api_key: Optional[str] = Field(
+        default=None, description="Grok/xAI API key (required only if an agent uses 'grok')"
+    )
+
+    # ── Provider + model per agent ───────────────────────────────────────
+    # Each agent has its own provider and model, independent of the others.
+    # Default: Gemini Flash everywhere — free tier, no credit card required
+    # (DEC-17 — chosen over Mistral for its more generous free-tier RPM,
+    # better suited to a 3-sequential-call pipeline).
+    researcher_provider: str = Field(
+        default="gemini", description="Provider used by the Researcher agent"
+    )
+    researcher_model: str = Field(
+        default="gemini-2.5-flash", description="Model used by the Researcher agent"
+    )
+
+    reasoner_provider: str = Field(
+        default="gemini", description="Provider used by the Reasoner agent"
+    )
+    reasoner_model: str = Field(
+        default="gemini-2.5-flash", description="Model used by the Reasoner agent"
+    )
+
+    synthesizer_provider: str = Field(
+        default="gemini", description="Provider used by the Synthesizer agent"
+    )
+    synthesizer_model: str = Field(
+        default="gemini-2.5-flash", description="Model used by the Synthesizer agent"
     )
 
     # ── Per-agent token limits ─────────────────────────────────────────────
@@ -54,11 +101,11 @@ class Settings(BaseSettings):
     # ── Timeouts & retry ──────────────────────────────────────────────────
     agent_timeout_seconds: int = Field(
         default=30,
-        description="Per-agent Anthropic call timeout in seconds",
+        description="Per-agent provider call timeout in seconds",
     )
     rate_limit_retry_delay: float = Field(
         default=1.0,
-        description="Base delay (seconds) for linear backoff on 429 — retries at 1x, 2x, 3x",
+        description="Base delay (seconds) for linear backoff on rate limit — retries at 1x, 2x, 3x",
     )
 
     # ── pydantic-settings model config ────────────────────────────────────
@@ -96,6 +143,35 @@ class Settings(BaseSettings):
             return [o.strip() for o in origins.split(",") if o.strip()]
         return origins
 
+    # ── Multi-provider resolution ────────────────────────────────────────
+
+    def get_agent_config(self, agent_name: str) -> tuple[str, str, str]:
+        """
+        Resolve (provider_name, model, api_key) for a given agent.
+
+        Args:
+            agent_name: "researcher" | "reasoner" | "synthesizer"
+
+        Returns:
+            Tuple (provider, model, api_key) ready to pass to
+            app.providers.get_provider().
+
+        Raises:
+            ValueError: if the API key matching the provider configured for
+                        this agent is absent (None). This is where the
+                        "key presence" validation actually happens now
+                        (DEC-18) — not at Settings() load time.
+        """
+        provider = getattr(self, f"{agent_name}_provider")
+        model = getattr(self, f"{agent_name}_model")
+        api_key = getattr(self, f"{provider}_api_key")
+        if api_key is None:
+            raise ValueError(
+                f"Agent '{agent_name}' is configured to use provider '{provider}' "
+                f"but {provider.upper()}_API_KEY is not set in .env"
+            )
+        return provider, model, api_key
+
 
 @lru_cache(maxsize=1)
 def get_settings() -> Settings:
@@ -107,6 +183,6 @@ def get_settings() -> Settings:
     Usage:
         from app.config import get_settings
         settings = get_settings()
-        print(settings.anthropic_model)
+        provider, model, api_key = settings.get_agent_config("researcher")
     """
     return Settings()

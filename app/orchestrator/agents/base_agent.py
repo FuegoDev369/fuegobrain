@@ -2,15 +2,22 @@
 app/orchestrator/agents/base_agent.py
 Abstract base class shared by all three FuegoBrain agents (Researcher, Reasoner, Synthesizer).
 
+Multi-provider extension (TICKET-29): this class is now provider-agnostic.
+It no longer instantiates the Anthropic SDK directly — instead it resolves,
+via Settings.get_agent_config() (TICKET-28), which provider/model/api_key
+this specific agent (AGENT_NAME) should use, then obtains the matching
+BaseLLMProvider adapter via app.providers.get_provider() (TICKET-27).
+
 Responsibilities:
-  - Instantiate and hold the Anthropic SDK client (once per agent instance)
-  - Execute the Anthropic API call inside asyncio.to_thread() to avoid blocking FastAPI
-  - Retry on RateLimitError (429) with linear backoff: 1×, 2×, 3× delay
-  - Measure wall-clock duration and capture token usage
+  - Resolve this agent's (provider, model, api_key) once at construction
+  - Execute the provider call inside asyncio.to_thread() to avoid blocking FastAPI
+  - Retry on ProviderRateLimitError with linear backoff: 1×, 2×, 3× delay
+  - Measure wall-clock duration and capture token usage (via ProviderResponse)
   - Build and return an AgentCallRecord for every completed call
 
 Each concrete agent subclass must implement:
-  - AGENT_NAME (str class attr)    — used in AgentCallRecord and pipeline_trace
+  - AGENT_NAME (str class attr)    — used in AgentCallRecord, pipeline_trace,
+                                      AND to resolve this agent's provider config
   - SYSTEM_PROMPT (str class attr) — the agent's instruction prompt, stored in code
   - build_user_message()           — formats the user-role message from AgentContext
   - _get_max_tokens()              — returns the per-agent token ceiling from settings
@@ -23,12 +30,16 @@ import asyncio
 import time
 from abc import ABC, abstractmethod
 
-# third-party
-import anthropic
-
 # local
 from app.config import get_settings
 from app.orchestrator.context import AgentCallRecord, AgentContext
+from app.providers import (
+    BaseLLMProvider,
+    ProviderAPIError,
+    ProviderRateLimitError,
+    ProviderResponse,
+    get_provider,
+)
 
 
 class BaseAgent(ABC):
@@ -38,11 +49,14 @@ class BaseAgent(ABC):
     Lifecycle per pipeline run:
       1. Orchestrator calls agent.run(context)
       2. run() calls build_user_message(context)  ← defined by subclass
-      3. run() calls _call_anthropic_with_retry(user_message)
+      3. run() calls _call_provider_with_retry(user_message)
       4. run() wraps result in AgentCallRecord and returns it
 
-    The Anthropic client is created once in __init__ and reused across calls —
+    The provider adapter is created once in __init__ and reused across calls —
     the Orchestrator singleton guarantees this is safe (single-threaded pipeline).
+    Which concrete provider (Anthropic/Mistral/Gemini/Grok) backs self.provider
+    depends entirely on this agent's *_PROVIDER setting in .env (DEC-17: Gemini
+    is the default for all three agents).
     """
 
     # ── Abstract class attributes (must be defined in each subclass) ───────────
@@ -67,8 +81,30 @@ class BaseAgent(ABC):
 
     def __init__(self) -> None:
         self.settings = get_settings()
-        # One Anthropic client per agent instance — reused across pipeline runs.
-        self.client = anthropic.Anthropic(api_key=self.settings.anthropic_api_key)
+
+        # Resolve this agent's provider/model/api_key from Settings (TICKET-28).
+        # self.AGENT_NAME is a @property returning a plain string constant
+        # (e.g. "researcher") — it is defined at the class level via the
+        # abstract property override in each subclass, so it is already
+        # accessible here even though __init__ has not finished running yet
+        # (no instance state is needed to resolve it).
+        # Raises ValueError if the API key for the configured provider is
+        # missing — this is the "dynamic validation" moment described in
+        # DEC-18: no longer caught at Settings() load time, but here, at
+        # this specific agent's instantiation.
+        provider_name, self.model, api_key = self.settings.get_agent_config(
+            self.AGENT_NAME
+        )
+        self.provider_name: str = provider_name  # NEW (TICKET-34) — stored so
+                                                    # AgentCallRecord can carry it;
+                                                    # previously resolved locally
+                                                    # then discarded (the gap fixed
+                                                    # by this ticket)
+
+        # One provider adapter instance per agent instance — reused across
+        # pipeline runs, exactly like the previous Anthropic-only client.
+        self.provider: BaseLLMProvider = get_provider(provider_name, api_key)
+
         # max_tokens is resolved once at construction from settings.
         self.max_tokens: int = self._get_max_tokens()
 
@@ -77,9 +113,9 @@ class BaseAgent(ABC):
     @abstractmethod
     def build_user_message(self, context: AgentContext) -> str:
         """
-        Construct the user-role message sent to the Anthropic API.
-        The system prompt is passed separately via the `system` parameter —
-        it is never included here.
+        Construct the user-role message sent to the configured LLM provider.
+        The system prompt is passed separately (as `system_prompt` to
+        provider.call()) — it is never included here.
 
         Each agent formats its input differently:
           - ResearcherAgent : only the original query
@@ -107,7 +143,7 @@ class BaseAgent(ABC):
           1. Build the user message via build_user_message() (may raise AssertionError
              if the required context fields are not yet populated — that's a bug in
              the Orchestrator's execution order, not a user-facing error)
-          2. Call Anthropic with linear-backoff retry on rate limits
+          2. Call the configured provider with linear-backoff retry on rate limits
           3. Wrap the result in an AgentCallRecord with timing and token data
 
         Returns:
@@ -115,61 +151,65 @@ class BaseAgent(ABC):
           OrchestrateResponse.pipeline_trace by response_builder.py
 
         Raises:
-          AssertionError         — precondition violation (Orchestrator bug)
-          anthropic.RateLimitError  — all retries exhausted (caught in main.py → HTTP 429)
-          anthropic.APITimeoutError — hard timeout exceeded (caught in main.py → HTTP 503)
-          anthropic.APIError        — other SDK errors (caught in main.py → HTTP 503)
+          AssertionError            — precondition violation (Orchestrator bug)
+          ProviderRateLimitError    — all retries exhausted (caught in main.py → HTTP 429)
+          ProviderAPIError          — other provider errors (caught in main.py → HTTP 503)
         """
         user_message: str = self.build_user_message(context)
 
         start_time = time.time()
-        response: anthropic.types.Message = await self._call_anthropic_with_retry(user_message)
+        response: ProviderResponse = await self._call_provider_with_retry(user_message)
         duration_ms: int = int((time.time() - start_time) * 1000)
 
         return AgentCallRecord(
             agent_name=self.AGENT_NAME,
+            provider=self.provider_name,   # NEW (TICKET-34)
+            model=self.model,               # NEW (TICKET-34)
             prompt_sent=user_message,
-            response_text=response.content[0].text,
+            response_text=response.text,
             duration_ms=duration_ms,
-            input_tokens=response.usage.input_tokens,
-            output_tokens=response.usage.output_tokens,
+            input_tokens=response.input_tokens,
+            output_tokens=response.output_tokens,
         )
 
-    # ── Internal: Anthropic call with linear-backoff retry ────────────────────
+    # ── Internal: provider call with linear-backoff retry ──────────────────────
 
-    async def _call_anthropic_with_retry(
-        self, user_message: str
-    ) -> anthropic.types.Message:
+    async def _call_provider_with_retry(self, user_message: str) -> ProviderResponse:
         """
-        Call client.messages.create() with up to 3 attempts on RateLimitError (429).
+        Renamed from _call_anthropic_with_retry (TICKET-29) — the retry logic
+        itself is UNCHANGED (3 attempts, linear backoff 1×/2×/3× — DEC-08).
+        Only the source of the exceptions changed: this method now catches
+        the generic ProviderRateLimitError / ProviderAPIError raised by
+        whichever adapter self.provider happens to be (Anthropic, Mistral,
+        Gemini, or Grok), instead of the Anthropic SDK's native exceptions.
 
         Backoff strategy (DEC-08 — linear, not exponential):
           Attempt 1 → sleep 1× delay  → Attempt 2 → sleep 2× delay → Attempt 3 → raise
 
-        The Anthropic SDK is synchronous — the call is wrapped in asyncio.to_thread()
-        to avoid blocking FastAPI's event loop (DEC-03).
-
-        Timeout and generic API errors are not retried — they propagate immediately.
+        self.provider.call() is synchronous by contract (BaseLLMProvider) — it
+        is wrapped in asyncio.to_thread() to avoid blocking FastAPI's event
+        loop, exactly as the Anthropic-only call was wrapped before (DEC-03).
+        This wrapping now applies generically to any provider, not just
+        Anthropic.
         """
         max_retries = 3
         delay = self.settings.rate_limit_retry_delay  # default 1.0s
 
         for attempt in range(max_retries):
             try:
-                # asyncio.to_thread() runs the synchronous SDK call in a thread pool,
-                # freeing the event loop to handle other requests concurrently.
-                response: anthropic.types.Message = await asyncio.to_thread(
-                    self.client.messages.create,
-                    model=self.settings.anthropic_model,
-                    max_tokens=self.max_tokens,
-                    system=self.SYSTEM_PROMPT,
-                    messages=[
-                        {"role": "user", "content": user_message}
-                    ],
+                # asyncio.to_thread() runs the synchronous provider call in a
+                # thread pool, freeing the event loop to handle other
+                # requests concurrently.
+                response: ProviderResponse = await asyncio.to_thread(
+                    self.provider.call,
+                    self.SYSTEM_PROMPT,
+                    user_message,
+                    self.model,
+                    self.max_tokens,
                 )
                 return response
 
-            except anthropic.RateLimitError:
+            except ProviderRateLimitError:
                 if attempt == max_retries - 1:
                     # All retries exhausted — propagate to Orchestrator → main.py → HTTP 429
                     raise
@@ -177,14 +217,11 @@ class BaseAgent(ABC):
                 backoff_seconds = delay * (attempt + 1)
                 await asyncio.sleep(backoff_seconds)
 
-            except anthropic.APITimeoutError:
-                # Timeout after AGENT_TIMEOUT_SECONDS — no retry, propagate immediately
-                raise
-
-            except anthropic.APIError:
-                # All other API errors (auth, server errors, etc.) — propagate immediately
+            except ProviderAPIError:
+                # All other provider errors (timeout, auth, server errors, etc.)
+                # — propagate immediately, no retry.
                 raise
 
         # Unreachable — the loop always returns or raises before exhaustion,
         # but satisfies type checkers expecting a return on all paths.
-        raise RuntimeError(f"[{self.AGENT_NAME}] _call_anthropic_with_retry: unexpected exit")
+        raise RuntimeError(f"[{self.AGENT_NAME}] _call_provider_with_retry: unexpected exit")

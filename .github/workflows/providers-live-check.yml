@@ -1,0 +1,63 @@
+# .github/workflows/providers-live-check.yml
+# FuegoBrain — Live Provider Check (manuel uniquement)
+#
+# Origine : TICKET-30 (test_providers.py) ne couvre que la logique des
+# adapters avec des mocks — rien ne confirme que les 4 vraies clés API
+# fonctionnent réellement ni que le format de réponse de chaque provider
+# correspond toujours à ce qu'attendent les adapters (un SDK ou une API
+# peut changer de format sans préavis). Ce workflow comble ce manque.
+#
+# ⚠️ Ce workflow effectue de VRAIS appels réseau vers les 4 providers LLM,
+# donc un coût réel sur les providers payants (Anthropic, Grok) et une
+# consommation réelle du quota gratuit (Mistral, Gemini). Pour cette
+# raison, il ne se déclenche JAMAIS automatiquement (pas de trigger
+# push/pull_request) — voir DEC-21 dans DECISIONS-PLANNIFICATEUR.md.
+# Fichier volontairement SÉPARÉ de ci.yml (TICKET-23) pour que la
+# distinction "automatique et gratuit" vs "manuel et potentiellement
+# payant" reste immédiatement visible dans l'onglet Actions de GitHub.
+name: Live Provider Check (manual)
+
+on:
+  workflow_dispatch:
+    inputs:
+      providers:
+        description: "Providers to test (comma-separated, or 'all')"
+        required: false
+        default: "all"
+        type: string
+
+jobs:
+  live-check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Run live provider smoke test
+        env:
+          # Secrets GitHub — configurés manuellement dans Settings →
+          # Secrets and variables → Actions. Un secret manquant ne fait
+          # pas échouer le job : le provider correspondant apparaît comme
+          # SKIPPED dans les logs (voir scripts/live_provider_check.py).
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          MISTRAL_API_KEY: ${{ secrets.MISTRAL_API_KEY }}
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+          GROK_API_KEY: ${{ secrets.GROK_API_KEY }}
+          PROVIDERS_TO_TEST: ${{ inputs.providers }}
+        # `python -m scripts.live_provider_check`, PAS `python scripts/live_provider_check.py`.
+        # Même mécanisme que DEC-15 (ci.yml / pytest) : lancer un script par son
+        # chemin place le dossier du script (scripts/) en tête de sys.path, pas
+        # la racine du repo — `from app.providers import ...` échoue alors avec
+        # ModuleNotFoundError: No module named 'app'. `python -m` insère la racine
+        # du repo (cwd, où actions/checkout@v4 clone) en tête de sys.path avant
+        # d'exécuter le module, ce qui résout l'import. Requiert scripts/__init__.py
+        # pour que `scripts` soit un package importable. Confirmé par exécution
+        # réelle en environnement isolé — voir VALIDATION-NOTES.md.
+        run: python -m scripts.live_provider_check

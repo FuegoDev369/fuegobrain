@@ -55,18 +55,26 @@ class AgentCallRecord:
     PipelineResult.agent_records, then mapped to AgentTraceItem Pydantic
     models in response_builder.py.
 
+    `provider` and `model` (NEW, TICKET-34) are resolved once in
+    BaseAgent.__init__() via Settings.get_agent_config() and captured here
+    so the full execution trace (pipeline_trace) always shows exactly which
+    LLM produced each stage, even when agents use different providers.
+
     Naming note — the HTTP boundary renames two fields (see INTERFACES-CRITIQUES.md):
       agent_name    → AgentTraceItem.agent
       response_text → AgentTraceItem.response
+    `provider` and `model` keep IDENTICAL names at the HTTP boundary — no rename.
     Do NOT rename these attributes — response_builder.py relies on them exactly.
     """
 
     agent_name: str       # "researcher" | "reasoner" | "synthesizer"
-    prompt_sent: str      # user-role message sent to Anthropic (system prompt excluded)
-    response_text: str    # raw text from response.content[0].text
+    provider: str          # NEW (TICKET-34) — e.g. "gemini" (from BaseAgent.provider_name)
+    model: str              # NEW (TICKET-34) — e.g. "gemini-2.5-flash" (from BaseAgent.model)
+    prompt_sent: str      # user-role message sent to the provider (system prompt excluded)
+    response_text: str    # raw text, normalised via ProviderResponse.text
     duration_ms: int      # int((end_time - start_time) * 1000)
-    input_tokens: int     # response.usage.input_tokens
-    output_tokens: int    # response.usage.output_tokens
+    input_tokens: int     # normalised via ProviderResponse.input_tokens
+    output_tokens: int    # normalised via ProviderResponse.output_tokens
     started_at: float = field(default_factory=time.time)  # Unix timestamp (for ordering/debug)
 
 
@@ -81,10 +89,15 @@ class PipelineResult:
 
     total_duration_ms is measured in orchestrator.py (pipeline start → pipeline end),
     not as the sum of agent durations — captures any overhead between agent calls.
+
+    model_used was REMOVED here (TICKET-34). It is redundant now that each
+    AgentCallRecord carries its own provider+model — PipelineMetadata.models_used
+    is computed directly from agent_records in response_builder.py (TICKET-35),
+    with no need to pre-aggregate a single value here (which was structurally
+    incapable of representing 3 potentially different models anyway).
     """
 
     final_answer: str                        # synthesizer_record.response_text
     agent_records: list[AgentCallRecord]     # [researcher, reasoner, synthesizer] in order
     total_duration_ms: int                   # end-to-end wall-clock duration
-    model_used: str                          # settings.anthropic_model ("claude-sonnet-4-6")
     original_query: str                      # echo of the original query for the response
