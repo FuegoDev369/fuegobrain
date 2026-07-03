@@ -62,7 +62,7 @@ flows through a single mutable `AgentContext` dataclass owned by the
 
 ## Live Demo
 
-🔗 **[RENDER_URL]** *(placeholder — replace with the deployed Render URL)*
+🔗 **https://fuegobrain.onrender.com** *(placeholder — replace with the deployed Render URL)*
 
 > 🖼️ *Screenshot placeholder — drop a screenshot of the running demo at
 > `docs/screenshot.png` and reference it here once deployed.*
@@ -72,16 +72,16 @@ flows through a single mutable `AgentContext` dataclass owned by the
 ## Try the API
 
 ```bash
-curl -X POST [RENDER_URL]/orchestrate \
+curl -X POST https://fuegobrain.onrender.com/orchestrate \
   -H "Content-Type: application/json" \
   -d '{"query": "What are the key differences between RAG and fine-tuning for LLMs?"}'
 ```
 
 ```bash
-curl [RENDER_URL]/health
+curl https://fuegobrain.onrender.com/health
 ```
 
-Interactive Swagger docs are always available at `[RENDER_URL]/docs`.
+Interactive Swagger docs are always available at `https://fuegobrain.onrender.com/docs`.
 
 ---
 
