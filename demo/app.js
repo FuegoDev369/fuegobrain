@@ -9,7 +9,7 @@
 
 // ── Constantes ──────────────────────────────────────────────────────────
 
-const API_BASE = window.location.origin; // auto-détecte localhost vs Render
+const API_BASE = "https://fuegobrain.onrender.com"; // Pointer explicitement vers l'URL Render
 const AGENT_NAMES = ['researcher', 'reasoner', 'synthesizer'];
 
 // Durées estimées pour l'animation progressive (ms).
