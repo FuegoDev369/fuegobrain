@@ -9,8 +9,7 @@
 
 [![CI](https://github.com/fuegodev369/fuegobrain/actions/workflows/ci.yml/badge.svg)](https://github.com/fuegodev369/fuegobrain/actions/workflows/ci.yml)
 
-> 🎬 *Demo GIF placeholder — record a 5-6s clip of the pipeline animation
-> running on an example query and drop it here as `docs/demo.gif`.*
+![demo thumbnail](docs/demo-thumbnail.png)
 
 ---
 
@@ -64,7 +63,7 @@ flows through a single mutable `AgentContext` dataclass owned by the
 
 🔗 **https://fuegobrain.onrender.com**
 
-![screenshot of the running demo](assets/screenshot.png)
+![screenshot of the running demo](docs/demo-screenshot.png)
 
 ---
 
