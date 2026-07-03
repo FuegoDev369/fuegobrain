@@ -77,8 +77,10 @@ app.add_middleware(
 )
 
 
-# ── GET /health ──────────────────────────────────────────────────────────
-@app.get("/health", response_model=HealthResponse, tags=["System"])
+# ── GET/HEAD /health ─────────────────────────────────────────────────────
+# Explicit methods=["GET", "HEAD"] (not @app.get, which only registers GET
+# on this FastAPI version — see docstring note below for why this matters).
+@app.api_route("/health", methods=["GET", "HEAD"], response_model=HealthResponse, tags=["System"])
 async def health_check() -> HealthResponse:
     """
     Liveness probe used by Render, UptimeRobot, and the Docker healthcheck.
@@ -91,6 +93,15 @@ async def health_check() -> HealthResponse:
     like UptimeRobot should see the process as "up" even if one provider
     is misconfigured; that is a config problem to fix, not a reason to
     report the whole service as down.
+
+    HEAD is explicitly supported alongside GET (not just left to framework
+    defaults): UptimeRobot's free-tier HTTP(s) monitor sends HEAD requests
+    by default and only allows switching to GET on a Pro plan — a GET-only
+    route would return 405 to every free-tier keepalive ping, permanently
+    marking the service "down" and defeating the anti-sleep mechanism this
+    endpoint exists for (GUIDE-DEPLOIEMENT-RENDER.md, ÉTAPE 6). FastAPI
+    does not auto-register HEAD for @app.get() routes here (unlike raw
+    Starlette's Route, which does) — confirmed empirically, not assumed.
     """
     settings = get_settings()
     agents: dict[str, str] = {}
@@ -150,7 +161,15 @@ async def orchestrate(request: OrchestrateRequest) -> OrchestrateResponse:
 if os.path.exists(DEMO_DIR):
     app.mount("/demo", StaticFiles(directory=DEMO_DIR, html=True), name="demo")
 
-    @app.get("/", include_in_schema=False)
+    @app.api_route("/", methods=["GET", "HEAD"], include_in_schema=False)
     async def root() -> FileResponse:
-        """Redirect the root URL to the web demo's index page."""
+        """
+        Redirect the root URL to the web demo's index page.
+
+        HEAD is supported alongside GET for the same reason as /health
+        (see health_check() docstring) — Render's own internal port-detection
+        probe sends a HEAD request here during deploy; a 405 doesn't block
+        the deploy (Render treats any HTTP response as "port is open"), but
+        there is no reason to leave it inconsistent with /health once fixed.
+        """
         return FileResponse(os.path.join(DEMO_DIR, "index.html"))

@@ -7,6 +7,8 @@
 ![Default](https://img.shields.io/badge/default-Gemini%20(free)-22c55e)
 ![Live Demo](https://img.shields.io/badge/demo-live-22c55e)
 
+[![CI](https://github.com/fuegodev369/fuegobrain/actions/workflows/ci.yml/badge.svg)](https://github.com/fuegodev369/fuegobrain/actions/workflows/ci.yml)
+
 > 🎬 *Demo GIF placeholder — record a 5-6s clip of the pipeline animation
 > running on an example query and drop it here as `docs/demo.gif`.*
 
