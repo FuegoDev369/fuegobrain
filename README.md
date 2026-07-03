@@ -62,7 +62,7 @@ flows through a single mutable `AgentContext` dataclass owned by the
 
 ## Live Demo
 
-🔗 **https://fuegobrain.onrender.com** *(placeholder — replace with the deployed Render URL)*
+🔗 **https://fuegobrain.onrender.com**
 
 > 🖼️ *Screenshot placeholder — drop a screenshot of the running demo at
 > `docs/screenshot.png` and reference it here once deployed.*
